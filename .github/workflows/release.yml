@@ -104,18 +104,26 @@ jobs:
             # generation of card.
             arch=("-DCMAKE_CUDA_ARCHITECTURES=80;86;89;90")
           fi
+          # TRELLIS2_C_BUILD_TOOLS stays ON: the vkmesh target lives inside the
+          # tools block, and the server spawns that binary at runtime, so the
+          # release has to configure the tools even though it builds only two
+          # targets from them.
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
             -DTRELLIS2_C_BACKEND=${{ matrix.backend }} \
             -DTRELLIS2_C_BUILD_SERVER=ON \
-            -DTRELLIS2_C_BUILD_TOOLS=OFF \
+            -DTRELLIS2_C_BUILD_TOOLS=ON \
             -DTRELLIS2_C_BUILD_TESTS=OFF \
             -DTRELLIS2_C_BUILD_RAYLIB_VIEWER=OFF \
             "${arch[@]}"
 
       - name: Build
-        run: cmake --build build --target trellis2-server -j
+        # vkmesh is the mesh postprocess helper the server spawns as a sibling
+        # executable (remesh + UV bake). It is a separate target, and a build of
+        # trellis2-server alone leaves it out of the archive -- which made every
+        # generation fail at the postprocess stage with "vkmesh failed".
+        run: cmake --build build --target trellis2-server vkmesh -j
 
       - name: Package
         shell: bash
@@ -124,11 +132,11 @@ jobs:
           name="trellis2-server-${{ steps.version.outputs.value }}-${{ matrix.asset }}"
           mkdir -p dist/stage
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp build/trellis2-server.exe dist/stage/
+            cp build/trellis2-server.exe build/vkmesh.exe dist/stage/
             cp LICENSE dist/stage/
             (cd dist/stage && powershell -NoProfile -Command "Compress-Archive -Path * -DestinationPath ../${name}.zip")
           else
-            cp build/trellis2-server dist/stage/
+            cp build/trellis2-server build/vkmesh dist/stage/
             cp LICENSE dist/stage/
             tar -czf "dist/${name}.tar.gz" -C dist/stage .
           fi

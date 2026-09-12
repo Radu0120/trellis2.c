@@ -111,6 +111,8 @@ typedef struct trellis_server_options {
     int texture_size;
     int steps;
     int model_cache_budget_mib;
+    int mesh_no_simplify;
+    int mesh_decimation_target;
     size_t max_body_bytes;
 } trellis_server_options;
 
@@ -914,8 +916,8 @@ static int handle_generate(
     pipeline_options.flow_blocks_override = -1;
     pipeline_options.flow_block_parts_override = -1;
     pipeline_options.mesh_postprocess = 1;
-    pipeline_options.mesh_postprocess_no_simplify = 1;
-    pipeline_options.mesh_postprocess_decimation_target = 1000000;
+    pipeline_options.mesh_postprocess_no_simplify = options->mesh_no_simplify;
+    pipeline_options.mesh_postprocess_decimation_target = options->mesh_decimation_target;
     pipeline_options.mesh_remesh = 1;
     pipeline_options.mesh_remesh_resolution = 0;
     pipeline_options.mesh_remesh_band = 1.0f;
@@ -1212,6 +1214,10 @@ static void usage(FILE * out, const char * exe) {
         "  --steps N               sampler steps for both flow stages (default 12)\n"
         "  --texture-size N        texture resolution (default 1024)\n"
         "  --model-cache-budget-mib N  GPU-resident weight cache cap; 0 is unlimited (default 0)\n"
+        "  --mesh-postprocess-simplify     Run the simplify pass (default: off, matching\n"
+        "                                  the CLI; the mesh keeps ~5x the triangles)\n"
+        "  --mesh-postprocess-no-simplify  Skip the simplify pass (default)\n"
+        "  --mesh-decimation-target N      Simplify target triangle count (default 1000000)\n"
         "\n"
         "Server:\n"
         "  --host ADDR             bind address (default 127.0.0.1)\n"
@@ -1239,6 +1245,8 @@ int main(int argc, char ** argv) {
     options.steps = 12;
     options.texture_size = 1024;
     options.model_cache_budget_mib = 0;
+    options.mesh_no_simplify = 1;
+    options.mesh_decimation_target = 1000000;
     options.max_body_bytes = (size_t) TRELLIS_SERVER_DEFAULT_MAX_BODY_MIB * 1024u * 1024u;
 
     for (int i = 1; i < argc; ++i) {
@@ -1268,6 +1276,16 @@ int main(int argc, char ** argv) {
         } else if (strcmp(argv[i], "--texture-size") == 0) {
             if (!parse_int_arg(arg_value(argc, argv, &i), &options.texture_size) || options.texture_size <= 0) {
                 fprintf(stderr, "invalid --texture-size\n");
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--mesh-postprocess-simplify") == 0) {
+            options.mesh_no_simplify = 0;
+        } else if (strcmp(argv[i], "--mesh-postprocess-no-simplify") == 0) {
+            options.mesh_no_simplify = 1;
+        } else if (strcmp(argv[i], "--mesh-decimation-target") == 0) {
+            if (!parse_int_arg(arg_value(argc, argv, &i), &options.mesh_decimation_target) ||
+                options.mesh_decimation_target <= 0) {
+                fprintf(stderr, "invalid --mesh-decimation-target\n");
                 return 2;
             }
         } else if (strcmp(argv[i], "--model-cache-budget-mib") == 0) {
@@ -1361,6 +1379,14 @@ int main(int argc, char ** argv) {
         trellis_socket_close(listener);
         return 1;
     }
+
+    // Establish ggml's timer base before the first request. ggml_time_us() is
+    // (QueryPerformanceCounter - timer_start), and timer_start is only set by
+    // ggml_time_init(), which the runtime runs once, lazily, from inside the
+    // first pipeline call. Timing a request across that first init measures the
+    // end against a zero base and reports a negative duration (observed:
+    // "generation failed after -239.8s").
+    trellis_runtime_init();
 
     TRELLIS_TOOL_INFO("trellis2-server listening on %s:%d", options.host, options.port);
     TRELLIS_TOOL_INFO(
